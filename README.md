@@ -24,12 +24,12 @@ Straiker Ascend ──► Straiker relay ◄──── outbound HTTPS (WebSock
 | | |
 |---|---|
 | macOS | `brew install straiker-ai/tap/ascend-tunnel` |
-| Windows | `winget install Straiker.AscendTunnel`, or `scoop bucket add straiker https://github.com/straiker-ai/scoop-bucket` then `scoop install ascend-tunnel` (no admin rights needed) |
+| Windows | the `.zip` from [Releases](../../releases) |
 | Linux | the `.deb` / `.rpm` from [Releases](../../releases) (installs a systemd service), or the archive |
 | Docker | `docker run ghcr.io/straiker-ai/ascend-tunnel` (see [Running it as a service](#running-it-as-a-service)) |
 | Anything else | the archive for your platform from [Releases](../../releases) - one static binary |
 
-Package-manager channels go live with the first tagged release.
+The macOS binary isn't notarized yet; the Homebrew cask removes the quarantine flag on install. winget and Scoop aren't published yet: they need the `PACKAGES_TOKEN` secret (see `.goreleaser.yaml`).
 
 ### Verify a download
 

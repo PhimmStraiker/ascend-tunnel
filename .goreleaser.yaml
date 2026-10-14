@@ -83,6 +83,13 @@ homebrew_casks:
       name: homebrew-tap
       token: "{{ .Env.PACKAGES_TOKEN }}"
     skip_upload: '{{ if isEnvSet "PACKAGES_TOKEN" }}false{{ else }}true{{ end }}'
+    # The binary isn't notarized yet; without this macOS kills it on first run (exit 137).
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ascend-tunnel"]
+          end
 
 scoops:
   - name: ascend-tunnel
