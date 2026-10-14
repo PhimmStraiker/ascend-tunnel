@@ -60,7 +60,8 @@ Four steps, in order. Each names who it involves and what you should see before 
 **Before you start**, have:
 
 - your **Straiker org id**;
-- the **host** of each app to reach, and its port if it is not 443;
+- the **host** of each app to reach, and its port if it is not 443 - see
+  [what goes in `--allow`](#what-goes-in---allow);
 - a **machine** inside your network that can reach those apps and stays on during assessments, with
   the agent [installed](#install). A server or VM is best: a laptop that sleeps, or a virtual desktop
   that resets at logoff, stops the tunnel.
@@ -198,6 +199,28 @@ Flags override `TUNNEL_*` environment variables, which override the config file
 The state directory holds the agent's private key; keep it, or the agent gets a new identity. By
 default: `%LOCALAPPDATA%\Straiker\ascend-tunnel` on Windows, `~/Library/Application Support/Straiker/ascend-tunnel`
 on macOS, `/var/lib/straiker-tunnel` for root on Linux, `~/.local/state/ascend-tunnel` otherwise.
+
+### What goes in `--allow`
+
+Each entry is one app, as this machine reaches it: `host` (port 443) or `host:port`. The host is a
+hostname or an IPv4 address - not an IPv6 address, a wildcard or a range. One entry per host: the app
+URL carries no port, so one host cannot be allowed on two ports.
+
+The agent resolves the host with this machine's own DNS (its hosts file, then your DNS servers) when
+it connects, not once at start, and dials it directly - never through the proxy. `check app` dials
+the same way, so if it passes, the agent reaches the app too.
+
+The host is also the app's name on Ascend's side: the app URL is `https://<host>.tun.straiker.ai`, and
+Ascend sends `<host>` as the `Host` header and, over TLS, as the server name. So allow the name the
+app answers to:
+
+- If this machine cannot resolve that name, add it to the machine's hosts file rather than allowing
+  an IP. In Docker, add it to the container instead: `--add-host chat.corp.internal:10.0.4.12`.
+- An IP works for an app that answers on any name. Ascend sends no server name to an IP, and a
+  `_tunnel_ca` then verifies the certificate only if the certificate lists that IP. An app that picks
+  a site by name, or a certificate issued only for a name, needs the name.
+- In Docker, `localhost` is the container itself: for an app on this machine, allow
+  `host.docker.internal`.
 
 ### Corporate proxies and TLS inspection
 
