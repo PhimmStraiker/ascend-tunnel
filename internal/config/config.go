@@ -27,7 +27,10 @@ type Environment struct {
 
 // Environments are built in, so a customer configures only their org id and allowlist.
 var Environments = map[string]Environment{
-	"prod": {Relay: "wss://ascendai-bridge.prod.straiker.ai/tunnel"},
+	"prod": {
+		Relay:   "wss://ascendai-bridge.prod.straiker.ai/tunnel",
+		HostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOo1Og0g1ySNPvGcpekTrxnLXVc2+2QJ5n3aisivR4X2",
+	},
 }
 
 // DefaultEnv is the environment used when neither a relay nor an environment is given.
