@@ -44,6 +44,7 @@ var proxyFunc = http.ProxyFromEnvironment
 func dialRelay(ctx context.Context, relay string, tc *tls.Config) (net.Conn, *http.Response, error) {
 	transport := &http.Transport{
 		Proxy:               proxyFunc,
+		DialContext:         dialNet,
 		TLSClientConfig:     tc,
 		TLSHandshakeTimeout: handshakeTimeout,
 		ForceAttemptHTTP2:   false, // a WebSocket upgrade is HTTP/1.1
@@ -62,16 +63,10 @@ func dialRelay(ctx context.Context, relay string, tc *tls.Config) (net.Conn, *ht
 
 // relayProxy names the proxy the relay is dialled through, or "" for a direct connection.
 func relayProxy(relay string) string {
-	u, err := url.Parse(relay)
-	if err != nil {
-		return ""
+	if p := relayProxyURL(relay); p != nil {
+		return redact(p.String())
 	}
-	u.Scheme = "https"
-	p, err := proxyFunc(&http.Request{URL: u})
-	if err != nil || p == nil {
-		return ""
-	}
-	return redact(p.String())
+	return ""
 }
 
 // redact drops any userinfo (a proxy password) before a URL reaches a log.

@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -39,6 +40,9 @@ type Agent struct {
 	id    *identity.Identity
 	audit *Audit
 	tls   *tls.Config
+	// diagnosed is set once this outage's diagnosis is logged, and cleared when a link connects.
+	diagnosed atomic.Bool
+	upSince   sync.Map // link -> when it connected, so a drop logs how long it was up
 
 	// Seams for tests.
 	session    func(ctx context.Context, link int) error
@@ -104,9 +108,14 @@ func (a *Agent) linkLoop(ctx context.Context, link int) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Links cut after the same uptime, again and again, point to a proxy's connection time limit.
+		up := []any{}
+		if t, ok := a.upSince.LoadAndDelete(link); ok {
+			up = []any{"up_s", int(a.now().Sub(t.(time.Time)).Seconds())}
+		}
 		switch {
 		case err == nil:
-			a.audit.Log("disconnected", "link", link, "error", "session ended")
+			a.audit.Log("disconnected", append([]any{"link", link, "error", "session ended"}, up...)...)
 			backoff, logged = reconnectMin, false
 		case isUnlisted(err):
 			if !logged || a.now().Sub(loggedAt) >= unlistedLogEvery {
@@ -121,13 +130,29 @@ func (a *Agent) linkLoop(ctx context.Context, link int) {
 			continue
 		default:
 			logged = false
-			a.audit.Log("disconnected", "link", link, "error", err.Error())
+			a.audit.Log("disconnected", append([]any{"link", link, "error", err.Error()}, up...)...)
+			if link == 0 && a.diagnosed.CompareAndSwap(false, true) {
+				a.diagnose(ctx)
+			}
 		}
 		if a.sleep(ctx, backoff+a.jitter(backoff/2)) != nil {
 			return
 		}
 		backoff = min(backoff*2, reconnectMax)
 	}
+}
+
+// diagnose logs where the path to the relay stops, so a customer who reads only the agent's log (e.g.
+// Docker Desktop's Logs tab) sees the cause and its fix, not just "disconnected". It dials only the
+// relay.
+func (a *Agent) diagnose(ctx context.Context) {
+	s := a.probeRelay(ctx, false)
+	lines := make([]string, 0, len(s))
+	for _, st := range s {
+		lines = append(lines, fmt.Sprintf("%s %s: %s", st.status, st.name, st.detail))
+	}
+	v := tunnelVerdict(s)
+	a.audit.Log("diagnosis", "result", v.status+": "+v.text, "fix", v.fix, "steps", lines)
 }
 
 // isUnlisted is the relay refusing this key: no app lists it.
@@ -202,10 +227,12 @@ func (a *Agent) runSession(ctx context.Context, link int) error {
 	if err != nil {
 		return err
 	}
+	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout)) // a middlebox that holds the WebSocket open
 	c, chans, reqs, err := ssh.NewClientConn(conn, a.relayAddr(), conf)
 	if err != nil {
 		return err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(c, chans, reqs)
 	defer client.Close()
 	go func() {
@@ -219,6 +246,8 @@ func (a *Agent) runSession(ctx context.Context, link int) error {
 		hosts = append(hosts, f.target.Host)
 	}
 	a.audit.Log("connected", "relay", a.cfg.Relay, "link", link, "targets", hosts)
+	a.diagnosed.Store(false)
+	a.upSince.Store(link, a.now())
 	for _, f := range forwards {
 		ln, err := client.ListenUnix(f.socket)
 		if err != nil {

@@ -28,9 +28,11 @@ var (
 const usage = `ascend-tunnel - the Straiker Ascend tunnel agent
 
 Usage:
-  ascend-tunnel [run] [flags]   run the agent (the default)
-  ascend-tunnel check [flags]   check the setup: relay, proxy, TLS, key, targets
-  ascend-tunnel key             print this agent's key, to paste into Ascend apps
+  ascend-tunnel [run] [flags]          run the agent (the default)
+  ascend-tunnel check [flags]          check the setup: the tunnel to Straiker, then your apps
+  ascend-tunnel check tunnel [flags]   only this machine to Straiker (no -allow needed)
+  ascend-tunnel check app [flags]      only this machine to your apps (no -org needed)
+  ascend-tunnel key                    print this agent's key, to paste into Ascend apps
   ascend-tunnel version         print the version
 
 Quick start:
@@ -71,6 +73,15 @@ func (l *listFlag) String() string     { return strings.Join(*l, ",") }
 func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
 func runAgent(cmd string, args []string, stdout, stderr io.Writer) int {
+	scope := agent.CheckAll
+	if cmd == "check" && len(args) > 0 {
+		switch args[0] {
+		case "tunnel":
+			scope, args = agent.CheckTunnel, args[1:]
+		case "app", "apps":
+			scope, args = agent.CheckApps, args[1:]
+		}
+	}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var path string
@@ -95,12 +106,20 @@ func runAgent(cmd string, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	o.Allow = allow
+	o.NoTenant = cmd == "check" && scope == agent.CheckApps
+	o.NoAllow = cmd == "check" && scope == agent.CheckTunnel
 	cfg, err := config.Load(configPath(path), o, os.Getenv)
 	if err != nil {
 		fmt.Fprintln(stderr, "ascend-tunnel:", err)
 		return 2
 	}
-	id, err := identity.Load(cfg.Tenant, cfg.StateDir)
+	var id *identity.Identity
+	switch {
+	case cmd != "check":
+		id, err = identity.Load(cfg.Tenant, cfg.StateDir)
+	case scope != agent.CheckApps: // a check never creates the agent's key; apps need none at all
+		id, err = identity.Peek(cfg.Tenant, cfg.StateDir)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "ascend-tunnel:", err)
 		return 1
@@ -113,7 +132,7 @@ func runAgent(cmd string, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "ascend-tunnel:", err)
 			return 1
 		}
-		if !a.Check(ctx, stdout) {
+		if !a.Check(ctx, stdout, scope) {
 			return 1
 		}
 		return 0

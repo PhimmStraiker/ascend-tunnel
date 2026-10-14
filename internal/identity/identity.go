@@ -31,6 +31,7 @@ type Identity struct {
 	SocketDir string     // relay-side directory only this login can create sockets in
 	KeyPath   string     // the private key file
 	Signer    ssh.Signer // signs the relay login
+	Unsaved   bool       // a throwaway key from Peek: the agent has not created its own yet
 }
 
 // Load returns the agent's identity for tenant, generating its key in stateDir on first use.
@@ -40,6 +41,39 @@ func Load(tenant, stateDir string) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newIdentity(tenant, path, signer), nil
+}
+
+// Peek is Load without creating anything, for `check`: with no key in stateDir yet it returns a
+// throwaway identity (a key in memory only, Unsaved), so the only key ever pasted is the running
+// agent's.
+func Peek(tenant, stateDir string) (*Identity, error) {
+	path := filepath.Join(stateDir, KeyFile)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		signer, err := ssh.NewSignerFromKey(priv)
+		if err != nil {
+			return nil, err
+		}
+		id := newIdentity(tenant, path, signer)
+		id.Unsaved = true
+		return id, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("agent key %s: %w", path, err)
+	}
+	signer, err := ssh.ParsePrivateKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("agent key %s: %w", path, err)
+	}
+	return newIdentity(tenant, path, signer), nil
+}
+
+func newIdentity(tenant, path string, signer ssh.Signer) *Identity {
 	id := AgentID(signer.PublicKey())
 	return &Identity{
 		Tenant:    tenant,
@@ -49,7 +83,7 @@ func Load(tenant, stateDir string) (*Identity, error) {
 		SocketDir: SocketDir(tenant, id),
 		KeyPath:   path,
 		Signer:    signer,
-	}, nil
+	}
 }
 
 // ensureKey loads the private key at path, generating an ed25519 key there (0600) if there is none.

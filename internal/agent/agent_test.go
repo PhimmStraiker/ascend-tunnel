@@ -69,6 +69,11 @@ func (r *testRelay) list(pub ssh.PublicKey) {
 }
 
 func (r *testRelay) handle(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Server", "WebSockify Python/3.14.8") // as the real relay answers
+	if !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
 	ws, err := websocket.Accept(w, req, nil)
 	if err != nil {
 		return
@@ -449,17 +454,26 @@ func TestCheckReportsEachStep(t *testing.T) {
 	a, _ := newAgent(t, r, []config.Forward{target, {Host: "127.0.0.1", Port: closedPort(t)}}, 1)
 
 	var out bytes.Buffer
-	if a.Check(context.Background(), &out) {
+	if a.Check(context.Background(), &out, CheckAll) {
 		t.Fatalf("an unreachable target fails the check:\n%s", out.String())
 	}
 	for _, want := range []string{
-		"PASS  relay WebSocket upgraded",
-		"PASS  relay host key matches",
-		"WAIT  no Ascend app lists this agent's key yet",
-		"PASS  target " + target.Addr() + " reachable",
-		"FAIL  target 127.0.0.1:",
+		"== Tunnel: this machine -> Straiker",
+		"PASS   tcp       port ",
+		"PASS   tls       verified 127.0.0.1",
+		"PASS   https     reached Straiker's relay (HTTP 404)",
+		"PASS   websocket upgraded",
+		"PASS   tunnel    relay host key matches",
+		"WAIT   login     no Ascend app lists this agent's key yet",
+		"org 1234",
+		"RESULT WAIT: this machine reaches Straiker",
+		"== Apps: this machine -> your apps",
+		"PASS   target    " + target.Addr() + " reachable",
+		"FAIL   target    127.0.0.1:",
+		"nothing listens on port",
+		"RESULT FAIL: this machine cannot reach 1 of 2 app(s)",
 		identity.PasteForm(a.id.PublicKey),
-		"INFO  app URL for " + target.Addr() + ": " + target.AppURL() + "/...",
+		"INFO   app       " + target.Addr() + " is reached at " + target.AppURL() + "/...",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
@@ -469,13 +483,13 @@ func TestCheckReportsEachStep(t *testing.T) {
 	r.list(a.id.Signer.PublicKey())
 	a.cfg.Forwards = a.cfg.Forwards[:1]
 	out.Reset()
-	if !a.Check(context.Background(), &out) || !strings.Contains(out.String(), "PASS  an Ascend app lists this agent's key") {
+	if !a.Check(context.Background(), &out, CheckAll) || !strings.Contains(out.String(), "PASS   login     an Ascend app lists this agent's key") {
 		t.Fatalf("a listed agent with reachable targets passes:\n%s", out.String())
 	}
 
 	a.cfg.HostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMk8CisV24CYS6k/jtJCKqtwmUyFXsWrG1h+R7Z6P7KM"
 	out.Reset()
-	if a.Check(context.Background(), &out) || !strings.Contains(out.String(), "does not match the pinned key") {
+	if a.Check(context.Background(), &out, CheckAll) || !strings.Contains(out.String(), "does not match the pinned key") {
 		t.Fatalf("a host key mismatch fails:\n%s", out.String())
 	}
 }
