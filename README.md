@@ -55,41 +55,126 @@ signature, so compare them after removing it.
 
 ## Set up
 
-You need your **Straiker org id** and the **host** of the app to reach from this machine (and its
-port, if it is not 443).
+Four steps, in order. Each names who it involves and what you should see before moving on.
 
-1. **Check the path** - the relay through your proxy, its TLS, and your app:
+**Before you start**, have:
+
+- your **Straiker org id**;
+- the **host** of each app to reach, and its port if it is not 443;
+- a **machine** inside your network that can reach those apps and stays on during assessments, with
+  the agent [installed](#install). A server or VM is best: a laptop that sleeps, or a virtual desktop
+  that resets at logoff, stops the tunnel.
+
+Run every command on that machine. Using Docker? Follow
+[the same steps with Docker](#the-same-steps-with-docker).
+
+### Step 1 - Check the tunnel (network team)
+
+```sh
+ascend-tunnel check tunnel --org 1234
+```
+
+Tests this machine's path to Straiker one hop at a time: DNS, TCP, your proxy, TLS, HTTPS, WebSocket,
+and the relay's identity. It installs and saves nothing.
+
+**Done when:** `RESULT PASS: this machine reaches Straiker` (or `RESULT WAIT` if the agent has run
+here before: the path is fine, its key is just not in an app yet). If a step fails, the `->` line under it
+says what to ask for - usually outbound HTTPS to `ascendai-bridge.prod.straiker.ai`, allowed by
+hostname, with WebSocket allowed. Not sure whether you have a proxy? The check lists proxy settings on
+this machine that the agent is not using, and tries the proxy they name. See
+[Troubleshooting](#troubleshooting).
+
+### Step 2 - Check the apps (app owner)
+
+```sh
+ascend-tunnel check app --allow chat.corp.internal
+```
+
+Tests that this machine reaches each app, and whether it speaks TLS or plain HTTP. Give `host:port`
+for a port other than 443, and repeat `--allow` for more apps. It never contacts Straiker.
+
+**Done when:** `RESULT PASS`. Note each app's **app URL**, e.g.
+`https://chat.corp.internal.tun.straiker.ai` - step 4 uses it. A `WARN` that an app speaks plain HTTP
+means its app URL starts with `http://` instead.
+
+### Step 3 - Run the agent (machine owner)
+
+Steps 1 and 2 only checked. Now start the agent for real, as a service that keeps running for your
+assessments, with the same org and allowlist - see [Running it as a service](#running-it-as-a-service).
+On its first start it creates its key in its state directory (the private half never leaves this
+machine) and logs it:
+
+```
+{"event":"identity", ... "agent_key":"AAAAC3NzaC1lZDI1NTE5...", ...}
+```
+
+**Done when:** you have copied `agent_key` from the agent's log. Until step 4 the agent logs `waiting`
+once a minute - expected.
+
+The agent keeps this key across restarts and upgrades, so you paste it once. It gets a new key only
+if its state directory is lost (for example, a Docker container removed without its volume); then
+paste the new one.
+
+### Step 4 - Connect the app in Ascend (Ascend user)
+
+In the app's settings in Ascend:
+
+- **URL:** the app URL from step 2 plus the app's path, e.g.
+  `https://chat.corp.internal.tun.straiker.ai/v1/chat`. No port: it lives in `--allow`.
+- **Request template:** add the key, as a list with one entry per agent:
+  `"_tunnel_agent_keys": ["AAAAC3NzaC1lZDI1NTE5..."]`. To have Ascend verify an app whose certificate
+  is from a private CA, also add that CA: `"_tunnel_ca": "<PEM>"`.
+
+Click **Test connection**.
+
+**Done when:** Test connection passes - that proves the whole path, and setup is done. Within seconds
+the agent logs `connected`, then one `connection` line per request.
+
+Then run assessments in Ascend, and keep the agent running while they do. More apps: add each host to
+`--allow`, restart the agent, and repeat step 4 with the same key. For availability, run a second
+agent and list both keys.
+
+### The same steps with Docker
+
+Docker Desktop includes the `docker` command (its **Terminal** button opens one). A container uses
+neither this machine's proxy settings nor its certificate store, so if you have a proxy, add
+`-e HTTPS_PROXY=http://proxy.corp:8080` to every command, and if it inspects TLS, mount its CA
+(`-v /path/to/ca.pem:/ca.pem:ro`, then `--ca-file /ca.pem`).
+
+1. **Check the tunnel** - saves nothing, so no volume:
 
    ```sh
-   ascend-tunnel check --org 1234 --allow chat.corp.internal
+   docker run --rm ghcr.io/straiker-ai/ascend-tunnel check tunnel --org 1234
    ```
 
-   Every line should read `PASS`, except `WAIT` for the key (step 3). Paste the output to Straiker if
-   anything fails.
-
-2. **Run it:**
+2. **Check the apps.** In a container, `localhost` is the container itself: for an app on this
+   machine, allow `host.docker.internal`.
 
    ```sh
-   ascend-tunnel --org 1234 --allow chat.corp.internal
+   docker run --rm ghcr.io/straiker-ai/ascend-tunnel check app --allow chat.corp.internal
    ```
 
-   `--allow chat.corp.internal` means port 443; give `host:port` for any other. On first start the
-   agent prints its key and the URL each target is reached at:
+3. **Run the agent**, with a volume for its key, and read the key:
 
+   ```sh
+   docker run -d --name ascend-tunnel --restart unless-stopped \
+     -v ascend-tunnel:/var/lib/ascend-tunnel \
+     ghcr.io/straiker-ai/ascend-tunnel --org 1234 --allow chat.corp.internal
+   docker logs ascend-tunnel | grep identity
    ```
-   {"event":"identity", ... "agent_key":"AAAAC3NzaC1lZDI1NTE5...",
-    "app_urls":["https://chat.corp.internal.tun.straiker.ai"], ...}
-   ```
 
-   `ascend-tunnel key` prints the key on its own; `check` prints both.
+   (In PowerShell, `| Select-String identity` instead of `| grep identity`.) The volume holds the
+   key: a new container with the same volume keeps it; without it, the agent makes a new key.
 
-3. **Authorize it in Ascend.** In the app's request template, set `_tunnel_agent_keys` to the key
-   (a list, one entry per agent), and set the app's URL to its target's app URL plus the app's path:
-   `https://chat.corp.internal.tun.straiker.ai/v1/chat`. Until an app lists the key the relay refuses the
-   agent; it retries every ~5 seconds, so **Test connection** works as soon as the key is pasted.
+   **From Docker Desktop's window instead:** pull the image once
+   (`docker pull ghcr.io/straiker-ai/ascend-tunnel`), then **Images**, **Run**, **Optional settings**:
+   container name `ascend-tunnel`; environment variables `TUNNEL_TENANT` = your org id and
+   `TUNNEL_ALLOW` = your apps (comma-separated); a volume with container path
+   `/var/lib/ascend-tunnel` and a folder of your choice as host path. The key is in the container's
+   **Logs** tab. Docker Desktop does not start it again on its own: after Docker Desktop restarts,
+   click **Start** on the container.
 
-More apps on the same agent: add each host with another `--allow`, and paste the same key into each
-app. For availability, run a second agent and list both keys.
+4. **Connect the app in Ascend** - exactly as in step 4 above. Test connection passing ends setup.
 
 ## Configuration
 
@@ -116,10 +201,18 @@ on macOS, `/var/lib/straiker-tunnel` for root on Linux, `~/.local/state/ascend-t
 
 ### Corporate proxies and TLS inspection
 
-The agent honours `HTTPS_PROXY` / `NO_PROXY` and trusts the operating system's certificate store,
-so a proxy CA your IT has installed just works. If the proxy's CA is not in the system store, pass
-it with `--ca-file`. The connection is an ordinary WebSocket over HTTPS, which inspecting proxies
-pass. The relay's SSH host key is pinned inside that connection, so a proxy cannot impersonate it.
+The agent reaches the relay through `HTTPS_PROXY` (an `http://`, `https://` or `socks5://` URL;
+credentials as `http://user:password@proxy:port`), honours `NO_PROXY`, and trusts the operating
+system's certificate store, so a proxy CA your IT has installed just works. If the proxy's CA is not
+in the system store, pass it with `--ca-file`. The connection is an ordinary WebSocket over HTTPS,
+which inspecting proxies pass. The relay's SSH host key is pinned inside that connection, so a proxy
+cannot impersonate it. Targets are always dialled directly, never through the proxy.
+
+Not supported: the operating system's proxy settings and PAC files - set `HTTPS_PROXY` instead;
+`check tunnel` lists the ones the agent is not using (also `HTTP_PROXY`, which it does not read for
+HTTPS), and tries the proxy they name - and NTLM or Kerberos proxy authentication: ask for the
+relay's host to be exempt from it (`check` names the scheme a proxy asks for). In Docker, pass `-e HTTPS_PROXY=...` and mount any CA: a container uses neither this machine's
+proxy settings nor its certificate store.
 
 ### Throughput
 
@@ -128,19 +221,51 @@ more agents.
 
 ## Running it as a service
 
-- **Linux (deb/rpm):** edit `/etc/straiker/agent.yaml`, then `systemctl enable --now ascend-tunnel`.
-  The unit runs it as a sandboxed dynamic user with its key in `/var/lib/ascend-tunnel`.
-- **Docker:**
+How to start the agent (step 3), read its key, and check with its key (when troubleshooting), on each
+platform:
 
-  ```sh
-  docker run -d --name ascend-tunnel --restart unless-stopped \
-    -v ascend-tunnel:/var/lib/ascend-tunnel \
-    ghcr.io/straiker-ai/ascend-tunnel --org 1234 --allow chat.corp.internal
-  ```
+- **Linux (deb/rpm):** put your org id and allowlist in `/etc/straiker/agent.yaml`, then
+  `sudo systemctl enable --now ascend-tunnel`. It runs as a sandboxed dynamic user with its key in
+  `/var/lib/ascend-tunnel`.
+  - Key: `journalctl -u ascend-tunnel | grep identity`
+  - Check: `sudo ascend-tunnel check -c /etc/straiker/agent.yaml --state-dir /var/lib/ascend-tunnel`
+- **Docker:** see [the same steps with Docker](#the-same-steps-with-docker). The image is distroless
+  (no shell) and runs as uid 65532.
+- **Windows and macOS:** `ascend-tunnel --org 1234 --allow chat.corp.internal` in a terminal, or
+  under your usual service manager. Keep the machine awake for the length of an assessment.
+  - Key: printed when it starts, or `ascend-tunnel key`
+  - Check: `ascend-tunnel check --org 1234 --allow chat.corp.internal`, as the same user
 
-  The image is distroless and runs as uid 65532; keep the volume, it holds the key.
-- **Windows and macOS:** run it in a terminal, or under your usual service manager. Keep the machine
-  awake for the length of an assessment - a sleeping laptop pauses it.
+## Troubleshooting
+
+When Test connection fails, or a run pauses because the agent is unavailable, run the full check with
+the agent's own key, on the machine (or in the container) it runs on - see
+[Running it as a service](#running-it-as-a-service) for the command on each platform; with Docker:
+
+```sh
+docker run --rm --volumes-from ascend-tunnel ghcr.io/straiker-ai/ascend-tunnel check --org 1234 --allow chat.corp.internal
+```
+
+Healthy is `RESULT PASS` for both halves, with the `login` step saying an app lists this agent's key.
+Otherwise its first `FAIL` is the answer, and the `->` line under it is what to do.
+
+| step | fails when | usually |
+|---|---|---|
+| `dns` | the relay's host does not resolve, or resolves to `0.0.0.0` | a DNS filter blocks it |
+| `tcp` | nothing answers on 443 | a firewall drops it, or this network needs a proxy; `check` also tries `www.microsoft.com:443` to tell which, and the proxy this machine's settings name |
+| `tcp` | some of the relay's addresses answer, some do not | a firewall rule by hostname that resolved a stale set of addresses |
+| `proxy` | the proxy answers `403`, `407` or `5xx` | its policy, credentials, or its own access to the relay |
+| `tls` | the connection is cut right after the TLS hello | filtering by name (SNI / URL category) |
+| `tls` | the certificate is from an unknown CA | TLS inspection: pass that CA with `--ca-file` |
+| `https` | something other than the relay answers | a block page or web filter; a `407` is a proxy this network expects you to use |
+| `websocket` | HTTPS works, the WebSocket upgrade does not | application control (e.g. Palo Alto App-ID `websocket`), or a TLS-inspecting proxy that strips the `Upgrade` header |
+| `tunnel` | the WebSocket opens, then is cut | inspection of WebSocket traffic |
+| `login` | `WAIT` | the key is not in an app yet, `--org` is not the app's org, or the key changed (new state dir) |
+
+The running agent logs the same diagnosis once per outage, as a `diagnosis` event; with Docker,
+`docker logs ascend-tunnel` (or Docker Desktop's Logs tab) shows it.
+
+`ping` does not help: the relay does not answer ping, even when it is reachable.
 
 ## The audit log
 
@@ -152,7 +277,8 @@ One JSON object per line, also printed to stdout:
 | `waiting` | the relay refused the key (no app lists it yet); at most once a minute |
 | `connected` / `forward` | a link is up, and each target's socket on it |
 | `connection` | one per connection through the tunnel: target, bytes each way, duration |
-| `disconnected` | a link dropped; it reconnects with backoff |
+| `disconnected` | a link dropped, after `up_s` seconds up; it reconnects with backoff. Drops after the same `up_s` again and again point to a proxy's connection time limit |
+| `diagnosis` | once per outage, when the relay cannot be reached: where the path stops, and the fix |
 
 ## Development
 

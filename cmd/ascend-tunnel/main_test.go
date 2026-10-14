@@ -54,3 +54,16 @@ func TestUsageAndVersion(t *testing.T) {
 		t.Fatalf("a missing org id is a usage error: %d %q", code, errOut.String())
 	}
 }
+
+func TestCheckAppNeedsNoOrgAndMakesNoKey(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	var out, errOut bytes.Buffer
+	// 127.0.0.1:1 is closed: the check fails there, without contacting Straiker.
+	code := run([]string{"check", "app", "--allow", "127.0.0.1:1", "--state-dir", dir}, &out, &errOut)
+	if code != 1 || !strings.Contains(out.String(), "== Apps") || strings.Contains(out.String(), "== Tunnel") {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("checking apps never creates an agent key")
+	}
+}

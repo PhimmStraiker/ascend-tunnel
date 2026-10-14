@@ -152,3 +152,19 @@ func TestAllowFromTheEnvironment(t *testing.T) {
 		t.Fatalf("got %v", c.Forwards)
 	}
 }
+
+func TestEachHalfOfCheckDropsOneRequirement(t *testing.T) {
+	c, err := Load("", Overrides{Tenant: "1", NoAllow: true}, noEnv)
+	if err != nil || len(c.Forwards) != 0 {
+		t.Fatalf("check tunnel needs no allowlist: %v", err)
+	}
+	if _, err := Load("", Overrides{Allow: []string{"h:1"}, NoTenant: true}, noEnv); err != nil {
+		t.Fatalf("check app needs no org: %v", err)
+	}
+	if _, err := Load("", Overrides{Tenant: "a b", Allow: []string{"h:1"}, NoTenant: true}, noEnv); err == nil {
+		t.Fatal("an org that is given is still validated")
+	}
+	if _, err := Load("", Overrides{Tenant: "1", Allow: []string{"h:"}, NoAllow: true}, noEnv); err == nil {
+		t.Fatal("an allowlist that is given is still validated")
+	}
+}

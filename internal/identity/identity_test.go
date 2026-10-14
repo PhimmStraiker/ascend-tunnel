@@ -112,3 +112,22 @@ func TestAnUnreadableKeyIsAnError(t *testing.T) {
 		t.Fatal("want an error for a corrupt key, never a silently new identity")
 	}
 }
+
+func TestPeekNeverCreatesAKey(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	id, err := Peek("1", dir)
+	if err != nil || !id.Unsaved {
+		t.Fatalf("no key yet: a throwaway identity (%v)", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("Peek created the state directory")
+	}
+	saved, err := Load("1", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Peek("1", dir)
+	if err != nil || again.Unsaved || again.PublicKey != saved.PublicKey {
+		t.Fatalf("with a key saved, Peek reads it: %v", err)
+	}
+}

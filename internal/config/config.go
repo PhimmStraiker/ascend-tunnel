@@ -87,6 +87,8 @@ type Overrides struct {
 	Tenant, Relay, HostKey, StateDir, CAFile, AuditLog, Env string
 	Fanout                                                  int
 	Allow                                                   []string // host:port
+	// NoTenant and NoAllow drop a requirement for `check app` (no org) and `check tunnel` (no allowlist).
+	NoTenant, NoAllow bool
 }
 
 type file struct {
@@ -148,7 +150,7 @@ func Load(path string, o Overrides, getenv func(string) string) (*Config, error)
 		CAFile:   pick(o.CAFile, "TUNNEL_CA_FILE", f.CAFile),
 		AuditLog: pick(o.AuditLog, "TUNNEL_AUDIT_LOG", f.AuditLog),
 	}
-	if !tenantRE.MatchString(c.Tenant) {
+	if !(o.NoTenant && c.Tenant == "") && !tenantRE.MatchString(c.Tenant) {
 		return nil, errors.New("tenant (your Straiker org id) is required")
 	}
 	if err := c.resolveRelay(pick(o.Env, "TUNNEL_ENV", f.Env)); err != nil {
@@ -174,6 +176,9 @@ func Load(path string, o Overrides, getenv func(string) string) (*Config, error)
 				allow = append(allow, a.raw)
 			}
 		}
+	}
+	if len(allow) == 0 && o.NoAllow {
+		return c, nil
 	}
 	if c.Forwards, err = parseForwards(allow, c.Fanout); err != nil {
 		return nil, err
