@@ -149,7 +149,8 @@ neither this machine's proxy settings nor its certificate store, so if you have 
    ```
 
 2. **Check the apps.** In a container, `localhost` is the container itself: for an app on this
-   machine, allow `host.docker.internal`.
+   machine, allow `host.docker.internal` (or see
+   [an app that must be called `localhost`](#an-app-that-must-be-called-localhost)).
 
    ```sh
    docker run --rm ghcr.io/straiker-ai/ascend-tunnel check app --allow chat.corp.internal
@@ -203,16 +204,22 @@ on macOS, `/var/lib/straiker-tunnel` for root on Linux, `~/.local/state/ascend-t
 ### What goes in `--allow`
 
 Each entry is one app, as this machine reaches it: `host` (port 443) or `host:port`. The host is a
-hostname or an IPv4 address - not an IPv6 address, a wildcard or a range. One entry per host: the app
-URL carries no port, so one host cannot be allowed on two ports.
+hostname or an IPv4 address - not an IPv6 address, a wildcard or a range. One entry per host (for
+two ports on one host, see [below](#two-ports-on-one-host)).
 
 The agent resolves the host with this machine's own DNS (its hosts file, then your DNS servers) when
 it connects, not once at start, and dials it directly - never through the proxy. `check app` dials
 the same way, so if it passes, the agent reaches the app too.
 
+**The port stays with the agent.** The app URL names only the host: Ascend reaches every app at its
+tunnel name, and the agent dials the `host:port` of the matching entry, so the port appears nowhere
+in Ascend. Moving the app to another port means changing the entry and restarting the agent; the app
+in Ascend stays as it is. What Ascend does need is the URL's scheme: `https://` if the app speaks
+TLS on that port, `http://` if not - `check app` says which.
+
 The host is also the app's name on Ascend's side: the app URL is `https://<host>.tun.straiker.ai`, and
-Ascend sends `<host>` as the `Host` header and, over TLS, as the server name. So allow the name the
-app answers to:
+Ascend sends `<host>` as the `Host` header (with no port) and, over TLS, as the server name. So allow
+the name the app answers to:
 
 - If this machine cannot resolve that name, add it to the machine's hosts file rather than allowing
   an IP. In Docker, add it to the container instead: `--add-host chat.corp.internal:10.0.4.12`.
@@ -220,7 +227,47 @@ app answers to:
   `_tunnel_ca` then verifies the certificate only if the certificate lists that IP. An app that picks
   a site by name, or a certificate issued only for a name, needs the name.
 - In Docker, `localhost` is the container itself: for an app on this machine, allow
-  `host.docker.internal`.
+  `host.docker.internal` - unless the app must be called `localhost` (next).
+
+#### An app that must be called `localhost`
+
+Some test apps accept only `Host: localhost`. Give the agent `localhost` as the host, so the app URL
+is `http://localhost.tun.straiker.ai/...` (or `https://`). The agent must then see the app at
+`localhost`:
+
+- **Run the agent on the app's machine, outside Docker:** `ascend-tunnel --org 1234 --allow
+  localhost:8089`. A port a container publishes on that machine counts.
+- **Or, when the app is a container, run the agent in the app container's network**, with the port
+  the app listens on inside its container (not the published one):
+
+  ```sh
+  docker run -d --name ascend-tunnel-app --restart unless-stopped \
+    --network container:<app container> \
+    -v ascend-tunnel-app:/var/lib/ascend-tunnel \
+    ghcr.io/straiker-ai/ascend-tunnel --org 1234 --allow localhost:8000
+  ```
+
+  It gets its own key (paste it into the app); if the app container is recreated, restart this one.
+
+Ascend sends `Host: localhost` with no port, so an app that insists on `localhost:8089` refuses it.
+
+#### Two ports on one host
+
+The app URL carries no port, so one name can be allowed on one port only. Give the second port a
+second name that reaches the same machine, allow that, and use it in the second app's URL:
+
+- in Docker, `--add-host app2.internal:host-gateway --allow app2.internal:8089`;
+- on the machine itself, a hosts-file line `127.0.0.1 app2.internal`, and `--allow
+  app2.internal:8089`.
+
+The second app's URL is then `http://app2.internal.tun.straiker.ai/...`.
+
+#### More than one agent
+
+- **For one app** (availability): every agent the app lists must allow the same `host:port` - Ascend
+  spreads the app's traffic across all of them.
+- **On one machine**: give each agent its own state directory or volume. Agents sharing a key are one
+  identity to the relay, and their forwards for the same host collide.
 
 ### Corporate proxies and TLS inspection
 
