@@ -332,12 +332,14 @@ func TestAStalledForwardRegistrationReconnects(t *testing.T) {
 	// Use the production keepalive timing: the SSH handshake deadline has already
 	// been cleared, and no reply or transport error will release ListenUnix.
 	deadline := time.Now().Add(keepaliveEvery + keepaliveWait + 10*time.Second)
+	var recoveredConn *ssh.ServerConn
 	for {
 		r.mu.Lock()
 		next := r.sockets[paths[1]]
 		recovered := next != nil && next != first && r.sockets[paths[0]] == next
 		r.mu.Unlock()
 		if recovered {
+			recoveredConn = next
 			break
 		}
 		if time.Now().After(deadline) {
@@ -345,10 +347,32 @@ func TestAStalledForwardRegistrationReconnects(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// Bound channel opening and EOF as well as registration. Closing this exact
+	// connection interrupts either operation; join its cleanup on every exit.
+	trafficCtx, cancelTraffic := context.WithTimeout(context.Background(), 5*time.Second)
+	trafficClosed := make(chan struct{})
+	go func() {
+		<-trafficCtx.Done()
+		recoveredConn.Close()
+		close(trafficClosed)
+	}()
+	defer func() {
+		cancelTraffic()
+		<-trafficClosed
+	}()
 	for _, path := range paths {
-		if got := roundTrip(t, r.open(t, path), "after reconnect"); got != "after reconnect" {
+		ch, reqs, err := recoveredConn.OpenChannel("forwarded-streamlocal@openssh.com",
+			ssh.Marshal(struct{ SocketPath, Reserved string }{path, ""}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		go ssh.DiscardRequests(reqs)
+		if got := roundTrip(t, ch, "after reconnect"); got != "after reconnect" {
 			t.Fatalf("reconnected forward echoed %q", got)
 		}
+	}
+	if err := trafficCtx.Err(); err != nil {
+		t.Fatalf("reconnected traffic did not complete before its deadline: %v", err)
 	}
 	if countEvents(audit.events(t), "disconnected") == 0 {
 		t.Fatalf("the stalled session must log its disconnect: %s", audit.String())
